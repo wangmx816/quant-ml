@@ -70,9 +70,9 @@ def build_classify_payload(metrics: dict, stock_data: dict) -> dict:
     }
 
 
-def build_strategy_payload(strategy: dict) -> dict:
+def _pack_version(block: dict) -> dict:
     stocks = []
-    for s in strategy["stocks"]:
+    for s in block["stocks"]:
         models = []
         for name, res in s["models"].items():
             models.append(
@@ -96,13 +96,36 @@ def build_strategy_payload(strategy: dict) -> dict:
                 "test_start": s["test_start"],
                 "test_end": s["test_end"],
                 "prob_threshold": s["prob_threshold"],
+                "horizon": s.get("horizon", 1),
+                "min_hold_days": s.get("min_hold_days", 1),
+                "trend_mode": s.get("trend_mode", False),
                 "label_rule": s["label_rule"],
                 "models": models,
             }
         )
+    return {"config": block["config"], "stocks": stocks, "bonus": block.get("bonus", {})}
+
+
+def build_strategy_payload(strategy: dict) -> dict:
+    """兼容旧结构；新结构含 baseline / improved / analysis。"""
+    if "baseline" in strategy and "improved" in strategy:
+        return {
+            "active_version": strategy.get("active_version", "improved"),
+            "baseline": _pack_version(strategy["baseline"]),
+            "improved": _pack_version(strategy["improved"]),
+            "analysis": strategy.get("analysis", {}),
+            # 默认展示改进版字段，便于旧前端逻辑
+            "config": strategy["improved"]["config"],
+            "stocks": _pack_version(strategy["improved"])["stocks"],
+            "bonus": strategy["improved"].get("bonus", {}),
+        }
     return {
-        "config": strategy["config"],
-        "stocks": stocks,
+        "active_version": "improved",
+        "baseline": None,
+        "improved": _pack_version(strategy) if "stocks" in strategy else strategy,
+        "analysis": strategy.get("analysis", {}),
+        "config": strategy.get("config", {}),
+        "stocks": strategy.get("stocks", []),
         "bonus": strategy.get("bonus", {}),
     }
 
@@ -212,6 +235,13 @@ def render_html(classify: dict, strategy: dict) -> str:
           <option>随机森林</option>
         </select>
       </div>
+      <div class="field" id="versionField">
+        <label>策略版本</label>
+        <select id="versionSel">
+          <option value="improved">改进版（分位数开仓/5日趋势）</option>
+          <option value="baseline">基线版（阈值0.55 / 次日）</option>
+        </select>
+      </div>
       <div class="field">
         <label>说明</label>
         <p class="sub" id="hint"></p>
@@ -287,7 +317,7 @@ def render_html(classify: dict, strategy: dict) -> str:
         </div>
         <div class="panel">
           <h2>图E  附加题：五股等权组合</h2>
-          <p class="cap">各股取其最优模型净值，等权合成组合。</p>
+          <p class="cap">各股取其最优模型净值，等权合成组合；虚线为等权买入持有。</p>
           <div class="kpi-grid" style="margin-top:8px;">
             <div class="kpi"><div class="label">组合累计</div><div class="value" id="bCum">-</div></div>
             <div class="kpi"><div class="label">组合年化</div><div class="value" id="bAnn">-</div></div>
@@ -296,19 +326,39 @@ def render_html(classify: dict, strategy: dict) -> str:
           </div>
           <div class="chart-box" style="height:280px;"><canvas id="bonusChart"></canvas></div>
         </div>
+        <div class="panel">
+          <h2>图F  基线 vs 改进 对比（金风 + 等权组合）</h2>
+          <p class="cap" id="compareCap">改进版降低阈值、改用5日趋势标签并设最低持仓5日。</p>
+          <div class="charts">
+            <div class="chart-box"><canvas id="cmpGwChart"></canvas></div>
+            <div class="chart-box"><canvas id="cmpBonusChart"></canvas></div>
+          </div>
+          <table style="margin-top:12px;">
+            <thead>
+              <tr><th>对象</th><th>版本</th><th>累计%</th><th>基准%</th><th>超额%</th><th>持仓占比</th><th>夏普</th></tr>
+            </thead>
+            <tbody id="cmpBody"></tbody>
+          </table>
+        </div>
       </section>
     </main>
   </div>
   <script>
     const PAYLOAD = {data_json};
-    let rocChart, priceChart, eqChart, qChart, bonusChart;
+    let rocChart, priceChart, eqChart, qChart, bonusChart, cmpGwChart, cmpBonusChart;
     let mode = 'classify';
+    let stratVersion = 'improved';
 
     function stockClassify(sym) {{
       return PAYLOAD.classify.stocks.find(s => s.symbol === sym);
     }}
+    function versionBlock() {{
+      const s = PAYLOAD.strategy;
+      if (s.baseline && s.improved) return s[stratVersion] || s.improved;
+      return s;
+    }}
     function stockStrategy(sym) {{
-      return PAYLOAD.strategy.stocks.find(s => s.symbol === sym);
+      return versionBlock().stocks.find(s => s.symbol === sym);
     }}
 
     function initSel() {{
@@ -324,6 +374,13 @@ def render_html(classify: dict, strategy: dict) -> str:
       document.getElementById('modelSel').addEventListener('change', () => {{
         if (mode === 'strategy') renderStrategy(sel.value);
       }});
+      const vsel = document.getElementById('versionSel');
+      if (PAYLOAD.strategy.active_version) vsel.value = PAYLOAD.strategy.active_version;
+      stratVersion = vsel.value;
+      vsel.addEventListener('change', () => {{
+        stratVersion = vsel.value;
+        if (mode === 'strategy') renderStrategy(sel.value);
+      }});
       document.getElementById('tabClassify').onclick = () => setMode('classify');
       document.getElementById('tabStrategy').onclick = () => setMode('strategy');
     }}
@@ -335,6 +392,7 @@ def render_html(classify: dict, strategy: dict) -> str:
       document.getElementById('viewClassify').classList.toggle('hidden', m !== 'classify');
       document.getElementById('viewStrategy').classList.toggle('hidden', m !== 'strategy');
       document.getElementById('modelField').style.display = m === 'strategy' ? 'block' : 'none';
+      document.getElementById('versionField').style.display = m === 'strategy' ? 'block' : 'none';
       refresh();
     }}
 
@@ -410,10 +468,12 @@ def render_html(classify: dict, strategy: dict) -> str:
       document.getElementById('modelSel').value = m.model;
       const mt = m.metrics;
       document.getElementById('sBadge').textContent =
-        '测试集 ' + s.test_start + ' ~ ' + s.test_end +
-        ' · 阈值 ' + s.prob_threshold + ' · 手续费万三';
+        '版本 ' + stratVersion +
+        ' · 测试集 ' + s.test_start + ' ~ ' + s.test_end +
+        ' · 阈值 ' + s.prob_threshold +
+        ' · 前瞻' + (s.horizon || 1) + '日 · 最低持仓' + (s.min_hold_days || 1) + '日';
       document.getElementById('sTitle').textContent =
-        s.name + ' · ' + m.model + ' 交易策略回测';
+        s.name + ' · ' + m.model + ' 交易策略回测（' + stratVersion + '）';
       document.getElementById('hint').textContent = s.label_rule +
         '；训练 ' + s.train_start + '~' + s.train_end +
         '，测试 ' + s.test_start + '~' + s.test_end;
@@ -467,7 +527,7 @@ def render_html(classify: dict, strategy: dict) -> str:
           <td>${{x.excess_return}}</td><td>${{x.trade_count}}</td></tr>`;
       }}).join('');
 
-      const b = PAYLOAD.strategy.bonus || {{}};
+      const b = versionBlock().bonus || {{}};
       if (b.metrics) {{
         document.getElementById('bCum').textContent = (b.metrics.cumulative_return || 0).toFixed(2) + '%';
         document.getElementById('bAnn').textContent = (b.metrics.annualized_return || 0).toFixed(2) + '%';
@@ -494,10 +554,70 @@ def render_html(classify: dict, strategy: dict) -> str:
           }}
         }});
       }}
+      renderCompare();
+    }}
+
+    function renderCompare() {{
+      const st = PAYLOAD.strategy;
+      if (!st.baseline || !st.improved) return;
+      const gwB = st.baseline.stocks.find(x => x.symbol === '002202');
+      const gwI = st.improved.stocks.find(x => x.symbol === '002202');
+      const mb = gwB.models.find(x => x.model === gwB.best_model);
+      const mi = gwI.models.find(x => x.model === gwI.best_model);
+      if (cmpGwChart) cmpGwChart.destroy();
+      cmpGwChart = new Chart(document.getElementById('cmpGwChart'), {{
+        type: 'line',
+        data: {{
+          labels: mb.equity.map(p => p.d),
+          datasets: [
+            {{ label: '基线最优', data: mb.equity.map(p => p.nv), borderColor: '#dc2626', pointRadius: 0, borderWidth: 1.5 }},
+            {{ label: '改进最优', data: mi.equity.map(p => p.nv), borderColor: '#2563eb', pointRadius: 0, borderWidth: 1.8 }},
+            {{ label: '买入持有', data: mb.equity.map(p => p.bench), borderColor: '#94a3b8', borderDash: [5,4], pointRadius: 0, borderWidth: 1.1 }}
+          ]
+        }},
+        options: {{
+          responsive: true, maintainAspectRatio: false,
+          plugins: {{ legend: {{ position: 'bottom' }}, title: {{ display: true, text: '金风科技净值对比' }} }},
+          scales: {{ x: {{ ticks: {{ maxTicksLimit: 6 }} }} }}
+        }}
+      }});
+      const b0 = st.baseline.bonus, b1 = st.improved.bonus;
+      if (cmpBonusChart) cmpBonusChart.destroy();
+      if (b0.equity && b1.equity) {{
+        cmpBonusChart = new Chart(document.getElementById('cmpBonusChart'), {{
+          type: 'line',
+          data: {{
+            labels: b0.equity.map(p => p.d),
+            datasets: [
+              {{ label: '等权·基线', data: b0.equity.map(p => p.nv), borderColor: '#dc2626', pointRadius: 0, borderWidth: 1.5 }},
+              {{ label: '等权·改进', data: b1.equity.map(p => p.nv), borderColor: '#7c3aed', pointRadius: 0, borderWidth: 1.8 }},
+              {{ label: '等权买入持有', data: b0.equity.map(p => p.bench), borderColor: '#94a3b8', borderDash: [5,4], pointRadius: 0, borderWidth: 1.1 }}
+            ]
+          }},
+          options: {{
+            responsive: true, maintainAspectRatio: false,
+            plugins: {{ legend: {{ position: 'bottom' }}, title: {{ display: true, text: '五股等权对比' }} }},
+            scales: {{ x: {{ ticks: {{ maxTicksLimit: 6 }} }} }}
+          }}
+        }});
+      }}
+      const a = st.analysis || {{}};
+      const g = a.goldwind_gap || {{}};
+      const e = a.equal_weight_gap || {{}};
+      document.getElementById('cmpBody').innerHTML = `
+        <tr><td>金风科技</td><td>基线</td><td>${{g.baseline_cum}}</td><td>${{g.baseline_bench}}</td>
+          <td>${{g.baseline_excess}}</td><td>${{((g.baseline_long_ratio||0)*100).toFixed(1)}}%</td><td>${{mb.metrics.sharpe_ratio}}</td></tr>
+        <tr class="best"><td>金风科技</td><td>改进</td><td>${{g.improved_cum}}</td><td>${{g.improved_bench}}</td>
+          <td>${{g.improved_excess}}</td><td>${{((g.improved_long_ratio||0)*100).toFixed(1)}}%</td><td>${{mi.metrics.sharpe_ratio}}</td></tr>
+        <tr><td>五股等权</td><td>基线</td><td>${{e.baseline_port_cum}}</td><td>${{e.baseline_bench_cum}}</td>
+          <td>${{e.baseline_excess}}</td><td>${{((e.baseline_avg_long||0)*100).toFixed(1)}}%</td><td>${{b0.metrics.sharpe_ratio}}</td></tr>
+        <tr class="best"><td>五股等权</td><td>改进</td><td>${{e.improved_port_cum}}</td><td>${{e.improved_bench_cum}}</td>
+          <td>${{e.improved_excess}}</td><td>${{((e.improved_avg_long||0)*100).toFixed(1)}}%</td><td>${{b1.metrics.sharpe_ratio}}</td></tr>`;
     }}
 
     initSel();
     document.getElementById('modelField').style.display = 'none';
+    document.getElementById('versionField').style.display = 'none';
     renderClassify('002202');
   </script>
 </body>
