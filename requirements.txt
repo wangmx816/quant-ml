@@ -1,0 +1,7 @@
+pandas>=1.5
+numpy>=1.23
+scikit-learn>=1.2
+matplotlib>=3.6
+requests>=2.28
+python-docx>=0.8.11
+pywin32>=306

@@ -1,0 +1,7 @@
+*.pyc
+__pycache__/
+.venv/
+data/_raw_*.json
+*.docx
+~$*
+.DS_Store
