@@ -19,6 +19,11 @@
 - 标签：下一交易日收益 > 0 → 1，否则 → 0
 - **每只股票独立建模**，不混合截面样本
 
+## 看板 Tab
+
+1. **分类评价**：ROC / AUC / 指标表（TASK5）
+2. **交易策略**：按时间划分训练测试，模型信号转仓位，净值、季度收益、模型对比与五股等权附加题（TASK6）
+
 ## 快速开始
 
 ```bash
@@ -26,6 +31,7 @@ pip install -r requirements.txt
 python -m src.data_fetch
 python build_dashboard.py
 python generate_task5_report.py --name wangmx
+python generate_task6_report.py --name wangmx
 ```
 
 ## 在线看板
@@ -40,10 +46,12 @@ quant-ml/
 ├── src/
 │   ├── data_fetch.py
 │   ├── features.py
-│   └── train.py
-├── data/                 # 日线与面板
-├── output/charts/        # ROC / AUC 图
+│   ├── train.py
+│   └── strategy.py      # ML 交易策略回测（TASK6）
+├── data/
+├── output/
 ├── build_dashboard.py
 ├── generate_task5_report.py
-└── index.html
+├── generate_task6_report.py
+└── index.html           # 双 Tab 看板
 ```
